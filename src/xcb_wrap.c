@@ -1,11 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <xcb/xcb.h>
 
 #include "xcb_wrap.h"
 
-void xcb_wrap_create_ctx(xcb_wrap_ctx_t* ctx) {
+void xcb_wrap_create_ctx(xcb_wrap_ctx_t* ctx, const char* const title) {
     ctx->conn = xcb_connect(NULL, NULL);
 
 
@@ -34,6 +35,17 @@ void xcb_wrap_create_ctx(xcb_wrap_ctx_t* ctx) {
                 opt_mask, opt_values);          /* options like events */
 
     xcb_map_window(ctx->conn, ctx->window);
+
+    xcb_change_property(
+                ctx->conn,
+                XCB_PROP_MODE_REPLACE,
+                ctx->window,
+                XCB_ATOM_WM_NAME,
+                XCB_ATOM_STRING,
+                8,
+                strlen(title),
+                title);
+
     xcb_flush(ctx->conn);
 }
 
