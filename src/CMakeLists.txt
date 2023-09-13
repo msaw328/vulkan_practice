@@ -1,6 +1,7 @@
 add_executable(vulkan-playground
             main.c
             xcb_wrap.c
+            vk_wrap.c
             )
 
 target_link_libraries(vulkan-playground

@@ -3,8 +3,12 @@
 #include <string.h>
 
 #include <xcb/xcb.h>
+#include <xcb/xcb_icccm.h>
 
 #include "xcb_wrap.h"
+
+#define WIDTH 640
+#define HEIGHT 480
 
 void xcb_wrap_create_ctx(xcb_wrap_ctx_t* ctx, const char* const title) {
     ctx->conn = xcb_connect(NULL, NULL);
@@ -28,7 +32,7 @@ void xcb_wrap_create_ctx(xcb_wrap_ctx_t* ctx, const char* const title) {
                 ctx->window,                    /* window Id           */
                 ctx->screen->root,              /* parent window       */
                 0, 0,                           /* x, y                */
-                640, 480,                       /* width, height       */
+                WIDTH, HEIGHT,                  /* width, height       */
                 10,                             /* border_width        */
                 XCB_WINDOW_CLASS_INPUT_OUTPUT,  /* class               */
                 ctx->screen->root_visual,       /* visual              */
@@ -45,6 +49,12 @@ void xcb_wrap_create_ctx(xcb_wrap_ctx_t* ctx, const char* const title) {
                 8,
                 strlen(title),
                 title);
+
+    // https://stackoverflow.com/a/27771295/5457426
+    xcb_size_hints_t hints;
+    xcb_icccm_size_hints_set_min_size(&hints, WIDTH, HEIGHT);
+    xcb_icccm_size_hints_set_max_size(&hints, WIDTH, HEIGHT);
+    xcb_icccm_set_wm_size_hints(ctx->conn, ctx->window, XCB_ATOM_WM_NORMAL_HINTS, &hints);
 
     xcb_flush(ctx->conn);
 }
