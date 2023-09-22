@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # all the errors
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror -pedantic -Wextra")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Werror -pedantic -Wextra -Wno-unused-variable")
 
 # use extra cmake modules
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "/usr/share/ECM/find-modules/")

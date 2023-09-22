@@ -483,8 +483,291 @@ void vk_wrap_main(xcb_wrap_ctx_t* xcb_ctx) {
         }
     };
 
-    
+    // this describes the layout of vertices in the input buffer
+    // since for now the vertices are hardcoded in the shader, everything is empty
+    VkPipelineVertexInputStateCreateInfo pipeline_vertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexBindingDescriptions = NULL,
+        .vertexAttributeDescriptionCount = 0,
+        .pVertexAttributeDescriptions = NULL
+    };
 
+    VkPipelineInputAssemblyStateCreateInfo pipeline_input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE
+    };
+
+    // Define viewport and scissor for the viewportstate
+    VkViewport pipeline_viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = (float) SWAPCHAIN_EXTENT.width,
+        .height = (float) SWAPCHAIN_EXTENT.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+
+    VkRect2D pipeline_scissor = {
+        .offset = { 0, 0 },
+        .extent = SWAPCHAIN_EXTENT
+    };
+
+    // This can be partially filled during runtime in a command buffer, but we'll put it in now
+    VkPipelineViewportStateCreateInfo pipeline_viewpot_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = &pipeline_viewport,
+        .scissorCount = 1,
+        .pScissors = &pipeline_scissor
+    };
+
+    // The rasterization step
+    VkPipelineRasterizationStateCreateInfo pipeline_rasterization_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+        .lineWidth = 1.0f,
+    };
+
+    // Multisampling disabled as of now, since it requires a gpu feature
+    VkPipelineMultisampleStateCreateInfo pipeline_multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    // there could be a VkPipelineDepthStencilStateCreateInfo here if i used depth/stencil testing
+
+    // Color blending needs 2 structures
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE
+        // Theres lots of factor that can be set here, but since blendEnable is disabled anyways no need to
+    };
+
+    VkPipelineColorBlendStateCreateInfo pipeline_color_blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+        // Again, lots of ooptions here but since most functionaity is just disabled, no need to set them
+    };
+
+    // With all the shader and non shader stages of pipeline defined, one can create a pipeline layout
+    VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        // Empty layout, so everything else like counts and pointers may be left to 0
+
+    };
+
+    // Create a renderpass (this should be done before finalizing the graphic pipeline i think?)
+    VkAttachmentDescription renderpass_attachment_desc = {
+        .format = SWAPCHAIN_FORMAT, // Images from our swapchain will be attached (via framebuffer) so the attachment should have the same format
+        .samples = VK_SAMPLE_COUNT_1_BIT, // i think this has to do with multisampling?
+
+        // "The loadOp and storeOp determine what to do with the data in the attachment before rendering and after rendering"
+        // pretty self explanatory
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+
+        // Similarly with stencil, but we do not use stencil buffer so we dont care
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+
+        // "Textures and framebuffers in Vulkan are represented by VkImage objects with a certain pixel format, however the layout of the pixels in memory can change based on what you're trying to do with an image."
+        // "We want the image to be ready for presentation using the swap chain after rendering, which is why we use VK_IMAGE_LAYOUT_PRESENT_SRC_KHR as finalLayout"
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    };
+
+    // Defining subpasses - for triangle we only really need one subpass. Each subpass may use output of the previous.
+    
+    // What attachments will the subpass reference
+    VkAttachmentReference subpass_attachment_reference = {
+        .attachment = 0, // index into the array of attachments
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL // which layout should the attachment be in - our color ouput
+    };
+
+    // Define the actual subpass
+    VkSubpassDescription subpass_definition = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, // this is the only option for now, but vulkan may support compute subpasses in the future - better be explicit now
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &subpass_attachment_reference
+
+        // there is some more attachment pointers in there than just color, but we do not use them
+        // "The index of the attachment in this array is directly referenced from the fragment shader with the layout(location = 0) out vec4 outColor directive"
+    };
+
+    VkRenderPassCreateInfo renderpass_create_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &renderpass_attachment_desc,
+        .subpassCount = 1,
+        .pSubpasses = &subpass_definition
+    };
+
+    VkRenderPass renderpass;
+
+    res = vkCreateRenderPass(dev, &renderpass_create_info, NULL, &renderpass);
+
+    if(res != VK_SUCCESS) _DIE("Cant create renderpass");
+
+    puts("Created renderpass");
+
+    // The actual layout object
+    VkPipelineLayout pipeline_layout;
+
+    res = vkCreatePipelineLayout(dev, &pipeline_layout_create_info, NULL, &pipeline_layout);
+
+    if(res != VK_SUCCESS) _DIE("Cant create pipeline layout");
+
+    puts("Created graphic pipeline structures and layout");
+
+    // FINALLY create the actual pipeline
+    VkGraphicsPipelineCreateInfo pipeline_create_info = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2, // 2 shader stages
+        .pStages = pipeline_shaders,
+
+        // fixed stages
+        .pVertexInputState = &pipeline_vertex_input,
+        .pInputAssemblyState = &pipeline_input_assembly,
+        .pViewportState = &pipeline_viewpot_state,
+        .pRasterizationState = &pipeline_rasterization_state,
+        .pMultisampleState = &pipeline_multisampling,
+        .pDepthStencilState = NULL, // we do not do depth or stencil
+        .pColorBlendState = &pipeline_color_blending,
+        .pDynamicState = NULL, // we do not use dynamic state
+
+        .layout = pipeline_layout, // use the empty layout we created
+
+        .renderPass = renderpass,
+        .subpass = 0,
+
+        // Last two fields allow re-use of some of previous pipelines, we do not use that feature
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = -1,
+    };
+
+    VkPipeline graphics_pipeline;
+
+    // null handle is for pipeline cache which we do not use, also the function can take an array of pipelines
+    res = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &pipeline_create_info, NULL, &graphics_pipeline);
+
+    if(res != VK_SUCCESS) _DIE("Cant create pipeline");
+
+    puts("Created graphic pipeline!!!");
+
+    // Create framebuffers
+    VkFramebuffer swapchain_framebuffers[swapchain_images_count];
+
+    for(size_t idx = 0; idx < swapchain_images_count; idx++) {
+        VkImageView fb_attachment = swapchain_image_views[idx];
+
+        VkFramebufferCreateInfo fb_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = renderpass,
+            .attachmentCount = 1,
+            .pAttachments = &fb_attachment,
+            .width = SWAPCHAIN_EXTENT.width,
+            .height = SWAPCHAIN_EXTENT.height,
+            .layers = 1
+        };
+
+        res = vkCreateFramebuffer(dev, &fb_info, NULL, &swapchain_framebuffers[idx]);
+
+        if(res != VK_SUCCESS) _DIE("Cant create framebuffer");
+    }
+
+    printf("Created framebuffers - %u\n", swapchain_images_count);
+
+    // Create command buffers
+    VkCommandPool cmd_pool;
+
+    VkCommandPoolCreateInfo cmd_pool_create_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // allows buffers to be rerecorded individually
+        .queueFamilyIndex = QUEUEFAM_IDX
+    };
+
+    res = vkCreateCommandPool(dev, &cmd_pool_create_info, NULL, &cmd_pool);
+
+    if(res != VK_SUCCESS) _DIE("Cannot create command pool");
+
+    puts("Created command pool");
+
+    // allocate a command buffer from the pool
+    VkCommandBuffer cmd_buffer;
+
+    // Create 1 buffer on primary level, from the given command pool
+    VkCommandBufferAllocateInfo cmd_buffer_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = cmd_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+
+    res = vkAllocateCommandBuffers(dev, &cmd_buffer_alloc_info, &cmd_buffer);
+
+    if(res != VK_SUCCESS) _DIE("Cannot create command buffer");
+
+    puts("Created primary command buffer");
+
+    // Record command buffer to start renderpass
+    VkCommandBufferBeginInfo cmd_buffer_begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = 0, // There are some flags, but none are useful to us
+    };
+
+    res = vkBeginCommandBuffer(cmd_buffer, &cmd_buffer_begin_info);
+
+    if(res != VK_SUCCESS) _DIE("Cannot begin command buffer");
+
+    puts("Began recording the command buffer");
+
+    size_t current_framebuffer_idx = 0;
+
+    VkClearValue clear_color = {
+        .color = {
+            .float32 = {
+                0.0f, 0.0f, 0.0f, 1.0f
+            }
+        }
+    };
+
+    VkRenderPassBeginInfo renderpass_begin_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = renderpass,
+        .framebuffer = swapchain_framebuffers[current_framebuffer_idx],
+        .renderArea = {
+            .offset = { 0, 0 },
+            .extent = SWAPCHAIN_EXTENT
+        },
+        .clearValueCount = 1,
+        .pClearValues = &clear_color
+    };
+
+    vkCmdBeginRenderPass(cmd_buffer, &renderpass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Vulkan may introduce compute pipelines in the future, but we're using graphics
+    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+    // We defined 3 vertices in the shader, and there is only one instance of the triangle, offsets both 0
+    vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(cmd_buffer);
+
+    res = vkEndCommandBuffer(cmd_buffer);
+
+    if(res != VK_SUCCESS) _DIE("Cannot end command buffer");
+
+    puts("Finished recording the command buffer");
 
     // Retrieve queue handle
     VkQueue queue;
@@ -499,9 +782,54 @@ void vk_wrap_main(xcb_wrap_ctx_t* xcb_ctx) {
 
     // SETUP ENDS HERE
     // Run the event loop from xcb while vulkan performs rendering
-    xcb_wrap_event_loop(xcb_ctx);
+    xcb_generic_event_t* ev = NULL;
+    while((ev = xcb_wait_for_event(xcb_ctx->conn))) {
+        switch (ev->response_type & ~0x80) {
+
+            case XCB_EXPOSE: {
+                //xcb_expose_event_t* expose_ev = (xcb_expose_event_t*) ev;
+                puts("EXPOSE event handler: press ESC to exit");
+                break;
+            }
+
+            case XCB_KEY_RELEASE: {
+                xcb_key_release_event_t* key_ev = (xcb_key_release_event_t*) ev;
+                
+                if(key_ev->detail == 9) {
+                    free(ev);
+                    return;
+                } // ESC
+                
+                break;
+            }
+
+            case XCB_KEY_PRESS: {
+                xcb_key_press_event_t* key_ev = (xcb_key_press_event_t*) ev;
+                
+                if(key_ev->detail == 9) {
+                    free(ev);
+                    return;
+                } // ESC
+
+                break;
+            }
+
+        }
+
+        free(ev);
+    };
 
     // !!!! CLEANUP AFTERWARDS !!!!
+    vkDestroyCommandPool(dev, cmd_pool, NULL);
+
+    for(size_t idx = 0; idx < swapchain_images_count; idx++) {
+        vkDestroyFramebuffer(dev, swapchain_framebuffers[idx], NULL);
+    }
+
+    vkDestroyPipeline(dev, graphics_pipeline, NULL);
+    vkDestroyPipelineLayout(dev, pipeline_layout, NULL);
+    vkDestroyRenderPass(dev, renderpass, NULL);
+
     vkDestroyShaderModule(dev, shadermod_vertex, NULL);
     vkDestroyShaderModule(dev, shadermod_fragment, NULL);
 
