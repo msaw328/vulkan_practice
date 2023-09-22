@@ -604,12 +604,28 @@ void vk_wrap_main(xcb_wrap_ctx_t* xcb_ctx) {
         // "The index of the attachment in this array is directly referenced from the fragment shader with the layout(location = 0) out vec4 outColor directive"
     };
 
+    // there is this thing about subpass dependencies, where one subpass may depend on another
+    // we only have 1 subpass, but there are two implicit subpasses before and after our defined subpasses
+    // "There are two built-in dependencies that take care of the transition at the start of the render pass and at the end of the render pass,"
+    // they take care of image transitions (among other things) between data written and presented? i think?
+    // Need to read up on this, also this struct is referenced in renderpass_create_info
+    VkSubpassDependency subpass_dep = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
     VkRenderPassCreateInfo renderpass_create_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = 1,
         .pAttachments = &renderpass_attachment_desc,
         .subpassCount = 1,
-        .pSubpasses = &subpass_definition
+        .pSubpasses = &subpass_definition,
+        .dependencyCount = 1,
+        .pDependencies = &subpass_dep
     };
 
     VkRenderPass renderpass;
@@ -719,19 +735,43 @@ void vk_wrap_main(xcb_wrap_ctx_t* xcb_ctx) {
 
     puts("Created primary command buffer");
 
-    // Record command buffer to start renderpass
+    // Retrieve queue handle
+    VkQueue queue;
+    vkGetDeviceQueue(
+        dev,
+        QUEUEFAM_IDX,
+        0,
+        &queue
+    );
+
+    // SETUP ENDS HERE
+    // Run the event loop from xcb while vulkan performs rendering
+    VkSemaphore sem_image_available, sem_render_finished;
+    VkFence fence_can_present;
+
+    VkSemaphoreCreateInfo sem_create_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+    };
+
+    // Fence we want to start signaled so it does not block us on 0th frame, when there is no previous frame in flight
+    VkFenceCreateInfo fence_create_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT
+    };
+
+    res = (vkCreateSemaphore(dev, &sem_create_info, NULL, &sem_image_available) != VK_SUCCESS) \
+            || (vkCreateSemaphore(dev, &sem_create_info, NULL, &sem_render_finished) != VK_SUCCESS) \
+            || (vkCreateFence(dev, &fence_create_info, NULL, &fence_can_present));
+
+    if(res) _DIE("Cannot create synchronization objects");
+
+    puts("Sync objects created");
+
+    // Some structures necessary for recording the command buffer in the main loop
     VkCommandBufferBeginInfo cmd_buffer_begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = 0, // There are some flags, but none are useful to us
     };
-
-    res = vkBeginCommandBuffer(cmd_buffer, &cmd_buffer_begin_info);
-
-    if(res != VK_SUCCESS) _DIE("Cannot begin command buffer");
-
-    puts("Began recording the command buffer");
-
-    size_t current_framebuffer_idx = 0;
 
     VkClearValue clear_color = {
         .color = {
@@ -744,7 +784,7 @@ void vk_wrap_main(xcb_wrap_ctx_t* xcb_ctx) {
     VkRenderPassBeginInfo renderpass_begin_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = renderpass,
-        .framebuffer = swapchain_framebuffers[current_framebuffer_idx],
+        .framebuffer = swapchain_framebuffers[0],
         .renderArea = {
             .offset = { 0, 0 },
             .extent = SWAPCHAIN_EXTENT
@@ -753,73 +793,127 @@ void vk_wrap_main(xcb_wrap_ctx_t* xcb_ctx) {
         .pClearValues = &clear_color
     };
 
-    vkCmdBeginRenderPass(cmd_buffer, &renderpass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    VkPipelineStageFlags wait_for_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &sem_image_available,
 
-    // Vulkan may introduce compute pipelines in the future, but we're using graphics
-    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+        // This specifies at what stage of the pipeline do we wait for the semaphore
+        .pWaitDstStageMask = wait_for_stages,
 
-    // We defined 3 vertices in the shader, and there is only one instance of the triangle, offsets both 0
-    vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+        // What command buffers to submit
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd_buffer,
 
-    vkCmdEndRenderPass(cmd_buffer);
-
-    res = vkEndCommandBuffer(cmd_buffer);
-
-    if(res != VK_SUCCESS) _DIE("Cannot end command buffer");
-
-    puts("Finished recording the command buffer");
-
-    // Retrieve queue handle
-    VkQueue queue;
-    vkGetDeviceQueue(
-        dev,
-        QUEUEFAM_IDX,
-        0,
-        &queue
-    );
-
-
-
-    // SETUP ENDS HERE
-    // Run the event loop from xcb while vulkan performs rendering
-    xcb_generic_event_t* ev = NULL;
-    while((ev = xcb_wait_for_event(xcb_ctx->conn))) {
-        switch (ev->response_type & ~0x80) {
-
-            case XCB_EXPOSE: {
-                //xcb_expose_event_t* expose_ev = (xcb_expose_event_t*) ev;
-                puts("EXPOSE event handler: press ESC to exit");
-                break;
-            }
-
-            case XCB_KEY_RELEASE: {
-                xcb_key_release_event_t* key_ev = (xcb_key_release_event_t*) ev;
-                
-                if(key_ev->detail == 9) {
-                    free(ev);
-                    return;
-                } // ESC
-                
-                break;
-            }
-
-            case XCB_KEY_PRESS: {
-                xcb_key_press_event_t* key_ev = (xcb_key_press_event_t*) ev;
-                
-                if(key_ev->detail == 9) {
-                    free(ev);
-                    return;
-                } // ESC
-
-                break;
-            }
-
-        }
-
-        free(ev);
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &sem_render_finished
     };
 
+    VkPresentInfoKHR presentation_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &sem_render_finished,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = NULL,
+        .pResults = NULL // result array for multiple swapchains, we only use one
+    };
+
+    xcb_generic_event_t* ev = NULL;
+    int should_close = 0;
+    uint32_t framebuffer_index = 0;
+    while(!should_close) {
+        // First part - handle events
+        while((ev = xcb_poll_for_event(xcb_ctx->conn))) {
+            switch (ev->response_type & ~0x80) {
+
+                case XCB_EXPOSE: {
+                    //xcb_expose_event_t* expose_ev = (xcb_expose_event_t*) ev;
+                    puts("EXPOSE event handler: press ESC to exit");
+                    break;
+                }
+
+                case XCB_KEY_RELEASE: {
+                    xcb_key_release_event_t* key_ev = (xcb_key_release_event_t*) ev;
+
+                    if(key_ev->detail == 9) {
+                        should_close = 1;
+                        break;
+                    } // ESC
+
+                    break;
+                }
+
+                case XCB_KEY_PRESS: {
+                    xcb_key_press_event_t* key_ev = (xcb_key_press_event_t*) ev;
+
+                    if(key_ev->detail == 9) {
+                        should_close = 1;
+                        break;
+                    } // ESC
+
+                    break;
+                }
+
+            }
+
+            free(ev);
+        };
+
+        // Second part - GPU stuff, draw frame etc
+        vkWaitForFences(dev, 1, &fence_can_present, VK_TRUE, UINT64_MAX);
+        vkResetFences(dev, 1, &fence_can_present); // fences have to manually reset
+
+        // Wait for the next framebuffer to be available, once it is return its index
+        // to the index variable and signal the image available semaphore
+        vkAcquireNextImageKHR(dev, swapchain, UINT64_MAX, sem_image_available, VK_NULL_HANDLE, &framebuffer_index);
+
+        // Make sure command can be began again, reset it
+        vkResetCommandBuffer(cmd_buffer, 0);
+
+        // Begin the recording of the command buffer
+        res = vkBeginCommandBuffer(cmd_buffer, &cmd_buffer_begin_info);
+
+        if(res != VK_SUCCESS) _DIE("Cannot begin command buffer");
+
+        // Instruct GPU to begin a render pass
+        // Also need to update the framebuffer in the renderpass_begin structure
+        // to the one acquired from the GPU
+        renderpass_begin_info.framebuffer = swapchain_framebuffers[framebuffer_index];
+        vkCmdBeginRenderPass(cmd_buffer, &renderpass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        // Vulkan may introduce compute pipelines in the future, but we're using graphics
+        // Bind the pipeline to use
+        vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
+
+         // We defined 3 vertices in the shader, and there is only one instance of the triangle, offsets both 0
+        vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+
+        vkCmdEndRenderPass(cmd_buffer);
+
+        res = vkEndCommandBuffer(cmd_buffer);
+
+        if(res != VK_SUCCESS) _DIE("Cannot end command buffer");
+
+        res = vkQueueSubmit(queue, 1, &submit_info, fence_can_present);
+
+        if(res != VK_SUCCESS) _DIE("Cannot submit command buffer");
+
+        // Finally, present the frame
+        // Need to update pImageIndices too, to point to a proper swapchain image
+        presentation_info.pImageIndices = &framebuffer_index;
+        vkQueuePresentKHR(queue, &presentation_info);
+    };
+
+    // Wait for the GPU to idle before destroying stuff
+    vkDeviceWaitIdle(dev);
+
     // !!!! CLEANUP AFTERWARDS !!!!
+    vkDestroySemaphore(dev, sem_image_available, NULL);
+    vkDestroySemaphore(dev, sem_render_finished, NULL);
+    vkDestroyFence(dev, fence_can_present, NULL);
+
     vkDestroyCommandPool(dev, cmd_pool, NULL);
 
     for(size_t idx = 0; idx < swapchain_images_count; idx++) {
